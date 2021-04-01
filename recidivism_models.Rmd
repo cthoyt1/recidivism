@@ -68,7 +68,7 @@ Yvalid <- recidivism[role=='valid',] %>%select(Two_yr_Recidivism) %>% unlist(.)
 set.seed(1)
 K            = 10
 trainControl = trainControl(method = "cv", number = K)
-tuneGrid     = expand.grid('alpha'=c(0,.25,.5,.75,1),'lambda' = seq(0.000001, .001, length.out = 30))
+tuneGrid     = expand.grid('alpha'=c(0,.25,.5,.75,1),'lambda' = seq(0.001, .1, length.out = 30))
 
 elasticOut = train(x = Xtrain, y = Ytrain,
                    method = "glmnet", 
