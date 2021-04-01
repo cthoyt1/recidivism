@@ -40,6 +40,7 @@ library(e1071)
 
 ```{r}
 recidivism <- read_csv('propublica_data_for_fairml.csv') %>%
+  select(-score_factor) %>%
   mutate(Two_yr_Recidivism = as.factor(ifelse(Two_yr_Recidivism==1,'Yes','No')))
 
 trainIndex = createDataPartition(recidivism$Two_yr_Recidivism, p = .5, list = FALSE) %>% as.vector(.)
@@ -101,6 +102,9 @@ rocOut = roc(response = Ytest, probHatTest$Yes)
 plot(rocOut)
 ```
 
+```{r}
+exp(-0.232)
+```
 
 
 
