@@ -1,0 +1,109 @@
+---
+title: "Recidivism Model Development"
+author: "Christian Hoyt"
+date: "3/31/2021"
+output: html_document
+---
+
+```{r}
+knitr::opts_knit$set(root.dir = '~/Learning/STAT-656/recidivism')
+```
+
+
+```{r}
+# library(RSQLite)
+library(readr)
+library(dplyr)
+library(caret)
+library(pROC)
+library(glmnet)
+library(e1071)
+```
+
+
+```{r}
+# filename <- "compas.db"
+# sqlite.driver <- dbDriver("SQLite")
+# db <- dbConnect(sqlite.driver,
+#                 dbname = filename)
+#                 
+# ## Some operations
+# dbListTables(db)
+# caseArrest <- dbReadTable(db,"casearrest")
+# charge <- dbReadTable(db,"charge")
+# compas <- dbReadTable(db,"compas")
+# jailHistory <- dbReadTable(db,"jailHistory")
+# people <- dbReadTable(db,"people")
+# prisonHistory <- dbReadTable(db,"prisonhistory")
+# summaryCompas <- dbReadTable(db,"summary")
+```
+
+```{r}
+recidivism <- read_csv('propublica_data_for_fairml.csv') %>%
+  mutate(Two_yr_Recidivism = as.factor(ifelse(Two_yr_Recidivism==1,'Yes','No')))
+
+trainIndex = createDataPartition(recidivism$Two_yr_Recidivism, p = .5, list = FALSE) %>% as.vector(.)
+validSplit = createDataPartition(recidivism$Two_yr_Recidivism[-trainIndex], p = .5, list = FALSE) %>% as.vector(.)
+
+n          = nrow(recidivism)
+testIndex  = (1:n)[-trainIndex][-validSplit]
+validIndex = (1:n)[-trainIndex][validSplit]
+
+role             = rep('train',n)
+role[testIndex]  = 'test'
+role[validIndex] = 'validation'
+
+Xtrain <- recidivism[role=='train',] %>%select(-Two_yr_Recidivism) %>% as.matrix(.)
+Ytrain <- recidivism[role=='train',] %>%select(Two_yr_Recidivism) %>% unlist(.)
+
+Xtest <- recidivism[role=='test',] %>%select(-Two_yr_Recidivism) %>% as.matrix(.)
+Ytest <- recidivism[role=='test',] %>%select(Two_yr_Recidivism) %>% unlist(.)
+
+Xvalid <- recidivism[role=='valid',] %>%select(-Two_yr_Recidivism) %>% as.matrix(.)
+Yvalid <- recidivism[role=='valid',] %>%select(Two_yr_Recidivism) %>% unlist(.)
+```
+
+```{r}
+set.seed(1)
+K            = 10
+trainControl = trainControl(method = "cv", number = K)
+tuneGrid     = expand.grid('alpha'=c(0,.25,.5,.75,1),'lambda' = seq(0.000001, .001, length.out = 30))
+
+elasticOut = train(x = Xtrain, y = Ytrain,
+                   method = "glmnet", 
+                   trControl = trainControl, tuneGrid = tuneGrid)
+elasticOut$bestTune
+```
+
+```{r}
+glmnetOut      = glmnet(x = Xtrain, y = Ytrain, alpha = elasticOut$bestTune$alpha, family = 'binomial')
+probHatTest    = predict(glmnetOut, Xtest, s=elasticOut$bestTune$lambda, type = 'response')
+YhatTest  = predict(elasticOut, Xtest, s=elasticOut$bestTune$lambda, type = 'raw')
+```
+
+
+
+```{r}
+betaHat  = coef(glmnetOut, s=elasticOut$bestTune$lambda)
+betaHat
+```
+
+```{r}
+mean(YhatTest == Ytest)
+```
+
+```{r}
+probHatTest = predict(elasticOut, Xtest, s=elasticOut$bestTune$lambda, type = 'prob')
+rocOut = roc(response = Ytest, probHatTest$Yes)
+```
+
+```{r}
+plot(rocOut)
+```
+
+
+
+
+
+
+
