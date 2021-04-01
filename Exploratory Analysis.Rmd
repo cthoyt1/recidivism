@@ -1,0 +1,81 @@
+---
+title: "Exploratory Analysis"
+author: "Lanie Mansfield"
+date: "3/31/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+rm(list=ls())
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(RSQLite)
+sqlite.driver <- dbDriver("SQLite")
+```
+
+# Load Data
+```{r data}
+db <- dbConnect(sqlite.driver, dbname = 'compas.db')
+people <- dbReadTable(db, 'people')
+rm(db)
+
+orig_n <- nrow(people)
+
+people <- people %>%
+  filter(is_recid != -1 & c_charge_degree != 'O' & abs(days_b_screening_arrest) <= 30) %>% 
+  mutate(length_of_stay = as.Date(c_jail_out) - as.Date(c_jail_in)) %>%
+  select(is_recid, is_violent_recid, sex, race, age:juv_other_count, decile_score, priors_count, c_charge_degree, length_of_stay) %>% 
+  mutate_at(vars(is_recid:race, age_cat, c_charge_degree), as.factor)
+```
+
+# Data Description
+The full dataset contains data on the criminal history and demographic background on `r orig_n` unique individuals. The available features include `r paste(colnames(people), collapse=(', '))`.
+
+Keeping with the data qualities standards proposed by ProPublic's analysis of the COMPAS recidivism data, we remove observations with the following issues: 
+
+*  Whether or not the indivual recidivated is not observed (irreconcilable missingness).
+* The charge is a traffic offense. 
+* The charge date and the date of arrest are more than 30 days apart, indicating that the documented offense is not the correct match. 
+
+Following the removal of these incomplete or irrelevant observations, `r nrow(people)` observations remain. 
+
+```{r pressure, echo=FALSE}
+people %>% group_by(is_recid) %>% 
+  summarize(n = n()) %>%
+  mutate(proportion = round(n/sum(n), 2)) %>%
+  arrange(desc(proportion))
+
+people %>% group_by(race) %>% 
+  summarize(n = n()) %>%
+  mutate(proportion = round(n/sum(n), 2)) %>%
+  arrange(desc(proportion))
+
+people %>% group_by(sex) %>% 
+  summarize(n = n()) %>%
+  mutate(proportion = round(n/sum(n), 2)) %>%
+  arrange(desc(proportion))
+
+people %>% group_by(age_cat) %>% 
+  summarize(n = n()) %>%
+  mutate(proportion = round(n/sum(n), 2)) %>%
+  arrange(desc(proportion))
+
+hist(people$priors_count, main = 'Priors Count', 
+     xlab = 'Priors', freq = FALSE)
+hist(log(people$priors_count), main = 'Priors Count', 
+     xlab = 'Log of Priors', freq = FALSE)
+
+male <- rep(0, nrow(people))
+male[people$sex == 'Male'] <- 1
+people_corr <- data.frame(as.numeric(as.character(people$is_recid)),
+                     as.numeric(as.character(people$is_violent_recid)),
+                     as.numeric(people$decile_score), 
+                     as.numeric(people$priors_count),
+                     as.numeric(people$juv_fel_count), 
+                     male, as.numeric(people$age))
+colnames(people_corr) <- c('recid', 'violent_recid', 'decile_score',
+                           'priors', 'juv_fel_count', 'male', 'age')
+round(cor(people_corr), 2)                     
+                              
+```
+
