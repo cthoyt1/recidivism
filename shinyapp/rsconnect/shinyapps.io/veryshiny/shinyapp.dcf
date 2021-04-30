@@ -1,0 +1,11 @@
+name: shinyapp
+title:
+username:
+account: veryshiny
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 4056646
+bundleId: 4540442
+url: https://veryshiny.shinyapps.io/shinyapp/
+when: 1619798908.2659
+lastSyncTime: 1619798908.26593

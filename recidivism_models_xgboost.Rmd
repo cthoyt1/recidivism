@@ -1,0 +1,283 @@
+---
+title: "Recidivism Pre-Process"
+author: "Shishir Rao"
+date: "31/03/2021"
+output: html_document
+---
+```{r eval=FALSE, include=FALSE}
+#install.packages('dplyr')
+#install.packages('ggplot2')
+#install.packages('AppliedPredictiveModelling')
+#install.packages('e1071')
+#install.packages('caret')
+#install.packages('corrplot')
+#install.packages('readr')
+#install.packages('RANN')
+#install.packages('glmnet')
+#install.packages('pROC')
+
+
+packs = c('dplyr','ggplot2','AppliedPredictiveModeling', 'e1071', 'caret', 'corrplot','readr','RANN','glmnet','pROC')
+lapply(packs,require,character.only=TRUE)
+
+setwd("~/Learning/STAT-656/recidivism")
+set.seed(1)
+
+TwoYearRecid = read_csv('compas-scores-two-years.csv')
+```
+
+```{r}
+dim(TwoYearRecid)
+is.data.frame(TwoYearRecid)
+TwoYearRecidSelect = select(TwoYearRecid,id,sex,age,age_cat,race,juv_fel_count,juv_misd_count,juv_other_count,priors_count, c_charge_degree,is_recid)
+
+
+table(sapply(TwoYearRecidSelect[1,],class))
+TwoYearRecidSelect = mutate_at(TwoYearRecidSelect,vars(sex,age_cat,race,c_charge_degree,is_recid), as.factor) %>% within( sex <- relevel(sex, ref = 2))%>% within( race <- relevel(race, ref = 5))
+str(TwoYearRecidSelect)
+
+
+
+anyNA(TwoYearRecidSelect)
+```
+
+
+
+
+
+```{r}
+trainIndex = createDataPartition(TwoYearRecidSelect$is_recid, p = 0.8, list = FALSE)
+Y          = select(TwoYearRecidSelect, is_recid) %>% unlist(.) 
+Xdf        = select(TwoYearRecidSelect, -is_recid, -id,-age_cat) 
+
+Ytrain     = Y[trainIndex] 
+
+Ytest      = Y[-trainIndex] %>% relevel(ref = '1')
+
+
+
+X = model.matrix(~., data = Xdf)
+
+XnoInt = X[,-1] 
+
+corrplot(cor(XnoInt), order = "hclust", tl.cex = 0.55)
+Correlation = as.matrix(cor(XnoInt))
+
+Xtrain = XnoInt[trainIndex,]
+Xtest  = XnoInt[-trainIndex,]
+corrplot(cor(Xtrain), order = "hclust", tl.cex = 0.55)
+CorrelationTrain = as.matrix(cor(Xtrain))
+
+```
+
+The next block here is for the sole purpose of trying out the log transformed features in the elastic net model. Delete it if it causes problems. First, lets look at the box plots and then code the transformations.
+
+```{r eval=FALSE, include=FALSE}
+boxplot(XnoInt[,2] ~ Y, ylab="Age", xlab = "0 = No Recidivism and 1 = Recidivism")
+boxplot(XnoInt[,8] ~ Y, ylab="juv_fel_count", xlab = "0 = No Recidivism and 1 = Recidivism")
+boxplot(XnoInt[,9] ~ Y, ylab="juv_misd_count", xlab = "0 = No Recidivism and 1 = Recidivism")
+boxplot(XnoInt[,10] ~ Y, ylab="juv_other_count", xlab = "0 = No Recidivism and 1 = Recidivism")
+boxplot(XnoInt[,11] ~ Y, ylab="priors_count", xlab = "0 = No Recidivism and 1 = Recidivism")
+
+```
+
+
+```{r eval=FALSE, include=FALSE}
+XtrainLogTrans = cbind(Xtrain, log(Xtrain[,2]+1), log(Xtrain[,8]+1),log(Xtrain[,9]+1),log(Xtrain[,10]+1),log(Xtrain[,11]+1))
+XtestLogTrans = cbind(Xtest, log(Xtest[,2]+1), log(Xtest[,8]+1),log(Xtest[,9]+1),log(Xtest[,10]+1),log(Xtest[,11]+1))
+
+Xtrain = XtrainLogTrans
+Xtest = XtestLogTrans
+
+colnames(Xtrain)
+colnames(Xtrain)[13] <- "log(age)"
+colnames(Xtrain)[14] <- "log(juv_fel_count)"
+colnames(Xtrain)[15] <- "log(juv_misd_count)"
+colnames(Xtrain)[16] <- "log(juv_other_count)"
+colnames(Xtrain)[17] <- "log(priors_count)"
+
+colnames(Xtest)[13] <- "log(age)"
+colnames(Xtest)[14] <- "log(juv_fel_count)"
+colnames(Xtest)[15] <- "log(juv_misd_count)"
+colnames(Xtest)[16] <- "log(juv_other_count)"
+colnames(Xtest)[17] <- "log(priors_count)"
+
+```
+
+
+```{r}
+K            = 10
+trainControl = trainControl(method = "cv", number = K)
+tuneGrid     = expand.grid('alpha'=c(0,.25,.5,.75,1),'lambda' = seq(0.00001, .2, length.out = 30))
+
+elasticOut = train(x = Xtrain, y = Ytrain,
+                   method = "glmnet", 
+                   trControl = trainControl, tuneGrid = tuneGrid)
+elasticOut$bestTune
+```
+
+```{r}
+glmnetOut      = glmnet(x = Xtrain, y = Ytrain, alpha = elasticOut$bestTune$alpha, family = 'binomial')
+probHatTest    = predict(glmnetOut, Xtest, s=elasticOut$bestTune$lambda, type = 'response')
+YhatTestGlmnet = ifelse(probHatTest > 0.5, 1, 0) %>% as.factor 
+table(YhatTestGlmnet)
+YHatTest = predict(elasticOut, Xtest, s=elasticOut$bestTune$lambda, type = 'raw')
+
+levels(Y)
+levels(Ytrain)
+levels(Ytest)
+levels(YhatTestGlmnet)
+levels(YHatTest)
+mean(YHatTest == Ytest)
+mean(YhatTestGlmnet == Ytest)
+
+
+
+```
+
+```{r}
+probHatTest = predict(elasticOut, Xtest, s=elasticOut$bestTune$lambda, type = 'prob')
+rocOut = roc(response = Ytest, probHatTest[,2])
+plot(rocOut,legacy.axes=T)
+rocOut$auc
+confusionMatrix(data = YHatTest, reference = Ytest)
+confusionMatrix(data = YhatTestGlmnet, reference = Ytest)
+
+
+table(YHatTest,YhatTestGlmnet)
+```
+
+
+```{r}
+betaHat  = coef(glmnetOut, s=elasticOut$bestTune$lambda)
+betaHat
+```
+
+Comparing to Logistic Regression
+```{r}
+trControl = trainControl(method = 'cv', number = 10)
+outLogistic = train(x = Xtrain, y = Ytrain, method = 'glm', trControl = trControl)
+YHatTestLogistic = predict(outLogistic,Xtest,type = 'raw')%>%relevel(ref = '1')
+mean(YHatTestLogistic == Ytest)
+confusionMatrix(data = YHatTestLogistic, reference = Ytest)
+
+probHatTestLog = predict(outLogistic, Xtest, type = 'prob')
+rocOutLog = roc(response = Ytest, probHatTestLog[,2])
+plot(rocOutLog,legacy.axes=T)
+rocOutLog$auc
+
+betaHatLog  = coef(outLogistic$finalModel)
+betaHatLog
+
+```
+
+Comparing to Logistic Regression by including log transformed features for the skewed data
+
+```{r}
+XtrainLogTrans = cbind(Xtrain, log(Xtrain[,2]+1), log(Xtrain[,8]+1),log(Xtrain[,9]+1),log(Xtrain[,10]+1),log(Xtrain[,11]+1))
+XtestLogTrans = cbind(Xtest, log(Xtest[,2]+1), log(Xtest[,8]+1),log(Xtest[,9]+1),log(Xtest[,10]+1),log(Xtest[,11]+1))
+
+colnames(XtrainLogTrans)[13] <- "log(age)"
+colnames(XtrainLogTrans)[14] <- "log(juv_fel_count)"
+colnames(XtrainLogTrans)[15] <- "log(juv_misd_count)"
+colnames(XtrainLogTrans)[16] <- "log(juv_other_count)"
+colnames(XtrainLogTrans)[17] <- "log(priors_count)"
+
+colnames(XtestLogTrans)[13] <- "log(age)"
+colnames(XtestLogTrans)[14] <- "log(juv_fel_count)"
+colnames(XtestLogTrans)[15] <- "log(juv_misd_count)"
+colnames(XtestLogTrans)[16] <- "log(juv_other_count)"
+colnames(XtestLogTrans)[17] <- "log(priors_count)"
+
+outLogisticTrans = train(x = XtrainLogTrans, y = Ytrain, method = 'glm', trControl = trControl)
+YHatTestLogisticTrans = predict(outLogisticTrans,XtestLogTrans,type = 'raw')%>%relevel(ref = '1')
+mean(YHatTestLogisticTrans == Ytest)
+confusionMatrix(data = YHatTestLogisticTrans, reference = Ytest)
+
+probHatTestLogTrans = predict(outLogisticTrans, XtestLogTrans, type = 'prob')
+rocOutLogTrans = roc(response = Ytest, probHatTestLogTrans[,2])
+plot(rocOutLogTrans,legacy.axes=T)
+
+betaHatLogTrans  = coef(outLogisticTrans$finalModel)
+betaHatLogTrans
+
+rocOut$auc
+rocOutLog$auc
+rocOutLogTrans$auc
+```
+
+```{r}
+outLogisticTrans = train(x = XtrainLogTrans, 
+                         y = Ytrain, method = 'xgboost',
+                         trControl = trControl)
+```
+
+```{r}
+pcaOut = prcomp(XtrainLogTrans,center=TRUE,scale=TRUE)
+
+pca_full <- data.frame(cbind(Ytrain,pcaOut$x[,1:2], XtrainLogTrans)) %>% select(-V21, -V22, -V23, -V23, -V24, -V25)
+
+names(pca_full)
+
+write.csv(pca_full, 'shinyapp/pca_data.csv', row.names=FALSE)
+
+pca_plot <- plot(pcaOut$x[,1:2], asp = 1)
+```
+
+```{r}
+which()
+
+which(pcaOut$x[,2] < -10)
+which(pcaOut$x[,1] < -20)
+
+Xtrain[c(94,118,1447,1795,2708,3368),]
+
+```
+
+```{r}
+set.seed(1)
+trControl = trainControl(method = "repeatedcv", repeats = 2, number = 10)
+tuneGrid = data.frame('nrounds'=c(50,150,500,1000,2000,3000),
+                      'max_depth' = 6,
+                      'eta' = .05,
+                      'gamma' = 0,
+                      'colsample_bytree' = 1,
+                      'min_child_weight' = 0,
+                      'subsample' = .5)
+
+boostOut   = train(x = XtrainLogTrans, y = Ytrain,
+                   method = "xgbTree", verbose = 0,
+                   tuneGrid = tuneGrid,
+                   trControl = trControl)
+plot(boostOut)
+
+boostImportance0 = xgboost::xgb.importance(model = boostOut$finalModel) 
+xgboost_import <- boostImportance0[,1:2] %>% arrange(desc(Gain))
+
+ggplot(data=xgboost_import, aes(x=reorder(Feature, Gain), y=Gain)) +
+  geom_bar(stat='identity',
+           fill = 'dark green') + 
+  coord_flip() +
+  xlab("Feature") +
+  ggtitle("XGBTree Feature Importance") +
+  theme(plot.title = element_text(hjust=0.5))
+```
+
+```{r}
+tuneGrid = expand.grid(cp = c(0.001, 0.01, 0.1))
+
+rpartOut = train(x = XtrainLogTrans, y = Ytrain,
+                  method = "rpart",
+                  tuneGrid = tuneGrid,
+                  trControl = trControl)
+plot(rpartOut$finalModel,margin= rep(.1,4))
+text(rpartOut$finalModel, cex = 0.4, digits = 1)
+```
+
+
+
+
+```{r}
+head(XtrainLogTrans)
+```
+
