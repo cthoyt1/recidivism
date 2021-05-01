@@ -1,0 +1,11 @@
+name: shiny_predictor
+title:
+username:
+account: veryshiny
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 4061142
+bundleId: 4542471
+url: https://veryshiny.shinyapps.io/shiny_predictor/
+when: 1619840931.7607
+lastSyncTime: 1619840931.76071

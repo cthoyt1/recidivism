@@ -1,7 +1,17 @@
 library(shiny)
-
+# rm(list=ls())
 h1("Recidivism Prediction App")
-
+# setwd('shiny_predictor')
+load('recid_predict.rda')
+load('x_test_quant.rda')
+load('cent_Scale.rda')
+load('cent_Scale_log.rda')
+load('dummy_Vars_Out.rda')
+load('dummy_Vars_Out_log.rda')
+load('elastic_Out.rda')
+load('elastic_Out_log.rda')
+load('out_Logistic.rda')
+load('out_Logistic_log.rda')
 
 ui <- fluidPage(
   ##App title
