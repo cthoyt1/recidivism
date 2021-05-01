@@ -1,0 +1,657 @@
+---
+title: "Recidivism Pre-Process"
+author: "Shishir Rao"
+date: "31/03/2021"
+output: html_document
+---
+```{r echo=TRUE}
+#install.packages('dplyr')
+#install.packages('ggplot2')
+#install.packages('AppliedPredictiveModelling')
+#install.packages('e1071')
+#install.packages('caret')
+#install.packages('corrplot')
+#install.packages('readr')
+#install.packages('RANN')
+#install.packages('glmnet')
+#install.packages('pROC')
+#install.packages("shiny")
+
+packs = c('dplyr','ggplot2','AppliedPredictiveModeling', 'e1071', 'caret', 'corrplot','readr','RANN','glmnet','pROC')
+lapply(packs,require,character.only=TRUE)
+
+setwd("~/Statistics/STAT 656/Project/Task 3")
+set.seed(1)
+
+TwoYearRecid = read_csv('compas-scores-two-years.csv')
+```
+
+```{r}
+dim(TwoYearRecid)
+is.data.frame(TwoYearRecid)
+TwoYearRecidSelect = select(TwoYearRecid,id,sex,age,age_cat,race,juv_fel_count,juv_misd_count,juv_other_count,priors_count, c_charge_degree,is_recid)
+
+
+table(sapply(TwoYearRecidSelect[1,],class))
+TwoYearRecidSelect = mutate_at(TwoYearRecidSelect,vars(sex,age_cat,race,c_charge_degree,is_recid), as.factor) %>% within( sex <- relevel(sex, ref = 2))%>% within( race <- relevel(race, ref = 5))
+str(TwoYearRecidSelect)
+
+
+
+anyNA(TwoYearRecidSelect)
+```
+
+
+
+
+
+```{r}
+trainIndex = createDataPartition(TwoYearRecidSelect$is_recid, p = 0.8, list = FALSE)
+Y          = select(TwoYearRecidSelect, is_recid) %>% unlist(.) 
+Xdf        = select(TwoYearRecidSelect, -is_recid, -id,-age_cat) 
+
+Ytrain     = Y[trainIndex] 
+
+Ytest      = Y[-trainIndex] #%>% relevel(ref = '1')
+
+
+
+
+
+
+XtrainTemp = Xdf[trainIndex,]
+XtestTemp  = Xdf[-trainIndex,]
+table(sapply(XtrainTemp[1,],class))
+table(sapply(XtestTemp[1,],class))
+
+XtrainQuant = select(XtrainTemp, age, juv_fel_count,juv_misd_count, juv_other_count, priors_count) 
+
+XtestQuant = select(XtestTemp, age, juv_fel_count,juv_misd_count, juv_other_count, priors_count) 
+
+corrplot(cor(XtrainQuant), order = "hclust", tl.cex = 0.55)
+
+
+centScale = preProcess(XtrainQuant)
+XtrainQuantCS = predict(centScale, newdata = XtrainQuant)
+XtestQuantCS = predict(centScale, newdata = XtestQuant)
+
+XtrainFactor = cbind(XtrainQuantCS,XtrainTemp$sex,XtrainTemp$race,XtrainTemp$c_charge_degree)
+table(sapply(XtrainFactor[1,],class))
+colnames(XtrainFactor)[6] <- "Sex"
+colnames(XtrainFactor)[7] <- "Race"
+colnames(XtrainFactor)[8] <- "Charge_Degree"
+
+XtestFactor = cbind(XtestQuantCS,XtestTemp$sex,XtestTemp$race,XtestTemp$c_charge_degree)
+table(sapply(XtestFactor[1,],class))
+colnames(XtestFactor)[6] <- "Sex"
+colnames(XtestFactor)[7] <- "Race"
+colnames(XtestFactor)[8] <- "Charge_Degree"
+
+dummyVarsOut = dummyVars(~.,data = XtrainFactor, fullRank = TRUE)
+Xtrain = predict(dummyVarsOut, newdata = XtrainFactor)
+Xtest = predict(dummyVarsOut, newdata = XtestFactor)
+
+table(sapply(Xtrain[1,],class))
+table(sapply(Xtest[1,],class))
+```
+
+Logistic Elastic Net with regular features
+
+```{r}
+K            = 10
+trainControl = trainControl(method = "cv", number = K)
+tuneGrid     = expand.grid('alpha'=c(0,.25,.5,.75,1),'lambda' = seq(0.00001, .2, length.out = 30))
+
+elasticOut = train(x = Xtrain, y = Ytrain,
+                   method = "glmnet", 
+                   trControl = trainControl, tuneGrid = tuneGrid)
+elasticOut$bestTune
+
+glmnetOut      = glmnet(x = as.matrix(Xtrain), y = Ytrain, alpha = elasticOut$bestTune$alpha, family = 'binomial')
+probHatTest    = predict(glmnetOut, as.matrix(Xtest), s=elasticOut$bestTune$lambda, type = 'response')
+YhatTestGlmnet = ifelse(probHatTest > 0.5, 1, 0) %>% as.factor 
+AccLogNet = mean(YhatTestGlmnet == Ytest) ##Accuracy
+
+probHatTest    = predict(elasticOut, as.matrix(Xtest), s=elasticOut$bestTune$lambda, type = "prob")
+confusionMatrix(data = YhatTestGlmnet, reference = Ytest)
+
+
+
+rocOut = roc(response = Ytest, probHatTest[,2])
+plot(rocOut,legacy.axes=T)
+AUCLogNet = rocOut$auc
+
+AccLogNet
+AUCLogNet
+```
+
+Logistic Regression with regular features
+
+```{r}
+outLogistic = train(x = Xtrain, y = Ytrain, method = 'glm', trControl = trainControl)
+YHatTestLogistic = predict(outLogistic,Xtest,type = 'raw')#%>%relevel(ref = '1')
+AccLog = mean(YHatTestLogistic == Ytest)
+confusionMatrix(data = YHatTestLogistic, reference = Ytest)
+
+probHatTest = predict(outLogistic, Xtest, type = 'prob')
+rocOut = roc(response = Ytest, probHatTest[,2])
+plot(rocOut,legacy.axes=T)
+AUCLog = rocOut$auc
+
+AccLog
+AUCLog
+
+
+```
+
+SVM Linear with regular features
+
+```{r eval=FALSE, include=FALSE}
+##SVM Linear
+K            = 2
+trainControl = trainControl(method = "cv", number = K)
+tuneGrid     = expand.grid( C = seq(0.00005, 0.2, length.out = 10))
+
+svcOut   = train(x = Xtrain, y = Ytrain,
+                 method = "svmLinear", 
+                 trControl = trainControl, tuneGrid = tuneGrid)
+svcOut
+YhatSVC = predict(svcOut, Xtest)
+ACCSVMLin = mean(YhatSVC == Ytest)
+
+ACCSVMLin
+```
+
+SVM Poly with regular features
+
+```{r eval=FALSE, include=FALSE}
+##SVM Poly
+
+set.seed(1)
+
+K            = 2
+trainControl = trainControl(method = "cv", number = K)
+tuneGrid     = expand.grid( C = seq(0.000001, 0.001, length.out = 5),
+                            degree = 2:4,
+                            scale  = seq(0.1,1, length.out = 5))
+start = proc.time()[3]
+svmPolyOut   = train(x = Xtrain, y = Ytrain,
+                 method = "svmPoly", 
+                 trControl = trainControl, tuneGrid = tuneGrid)
+end = proc.time()[3]
+svmPolyOut$bestTune
+
+YhatSVCPoly = predict(svmPolyOut, Xtest)
+ACCSVMPoly = mean(YhatSVCPoly == Ytest)
+ACCSVMPoly
+```
+
+SVM Radial with regular features
+
+```{r eval=FALSE, include=FALSE}
+## SVM Radial
+
+K            = 2
+trainControl = trainControl(method = "cv", number = K)
+
+pairWiseDist = dist(Xtrain, method = 'euclidean')**2
+
+sigmaRange = quantile(pairWiseDist, c(0.9,0.5,0.1))
+hist(pairWiseDist)
+abline(v = sigmaRange[1])
+abline(v = sigmaRange[2])
+abline(v = sigmaRange[3])
+1/sigmaRange
+set.seed(1)
+tuneGrid     = expand.grid( C = c(25,250,500,1000,2000),
+                            sigma  = c(1/sigmaRange,1/sigmaRange*100))
+start = proc.time()[3]
+svmRBFout   = train(x = Xtrain, y = Ytrain,
+                 method = "svmRadial", 
+                 trControl = trainControl, tuneGrid = tuneGrid)
+end = proc.time()[3]
+
+YhatSVMRadial = predict(svmRBFout, Xtest)
+ACCSVMRadial = mean(YhatSVMRadial == Ytest)
+ACCSVMRadial
+
+```
+
+
+Logistic Elastic Net including log of quantitative features
+
+```{r}
+XtrainQuantLog = mutate(XtrainQuant,log(XtrainQuant$age), log(XtrainQuant$juv_fel_count + 1), log(XtrainQuant$juv_misd_count + 1), log(XtrainQuant$juv_other_count + 1), log(XtrainQuant$priors_count + 1)  )
+colnames(XtrainQuantLog)[6] <- "log(age)"
+colnames(XtrainQuantLog)[7] <- "log(juv_fel_count)"
+colnames(XtrainQuantLog)[8] <- "log(juv_misd_count)"
+colnames(XtrainQuantLog)[9] <- "log(juv_other_count)"
+colnames(XtrainQuantLog)[10] <- "log(priors_count)"
+
+
+XtestQuantLog = mutate(XtestQuant,log(XtestQuant$age), log(XtestQuant$juv_fel_count + 1), log(XtestQuant$juv_misd_count + 1), log(XtestQuant$juv_other_count + 1), log(XtestQuant$priors_count + 1)  )
+colnames(XtestQuantLog)[6] <- "log(age)"
+colnames(XtestQuantLog)[7] <- "log(juv_fel_count)"
+colnames(XtestQuantLog)[8] <- "log(juv_misd_count)"
+colnames(XtestQuantLog)[9] <- "log(juv_other_count)"
+colnames(XtestQuantLog)[10] <- "log(priors_count)"
+
+centScaleLog = preProcess(XtrainQuantLog)
+XtrainQuantCS = predict(centScaleLog, newdata = XtrainQuantLog)
+XtestQuantCS = predict(centScaleLog, newdata = XtestQuantLog)
+
+XtrainFactor = cbind(XtrainQuantCS,XtrainTemp$sex,XtrainTemp$race,XtrainTemp$c_charge_degree)
+table(sapply(XtrainFactor[1,],class))
+colnames(XtrainFactor)[11] <- "Sex"
+colnames(XtrainFactor)[12] <- "Race"
+colnames(XtrainFactor)[13] <- "Charge_Degree"
+
+XtestFactor = cbind(XtestQuantCS,XtestTemp$sex,XtestTemp$race,XtestTemp$c_charge_degree)
+table(sapply(XtestFactor[1,],class))
+colnames(XtestFactor)[11] <- "Sex"
+colnames(XtestFactor)[12] <- "Race"
+colnames(XtestFactor)[13] <- "Charge_Degree"
+
+dummyVarsOutLog = dummyVars(~.,data = XtrainFactor, fullRank = TRUE)
+Xtrain = predict(dummyVarsOutLog, newdata = XtrainFactor)
+Xtest = predict(dummyVarsOutLog, newdata = XtestFactor)
+
+table(sapply(Xtrain[1,],class))
+table(sapply(Xtest[1,],class))
+
+
+K            = 10
+trainControl = trainControl(method = "cv", number = K)
+tuneGrid     = expand.grid('alpha'=c(0,.25,.5,.75,1),'lambda' = seq(0.00001, .2, length.out = 30))
+
+elasticOutLog = train(x = Xtrain, y = Ytrain,
+                   method = "glmnet", 
+                   trControl = trainControl, tuneGrid = tuneGrid)
+elasticOutLog$bestTune
+
+glmnetOut      = glmnet(x = as.matrix(Xtrain), y = Ytrain, alpha = elasticOutLog$bestTune$alpha, family = 'binomial')
+probHatTest    = predict(glmnetOut, as.matrix(Xtest), s=elasticOut$bestTune$lambda, type = 'response')
+YhatTestGlmnet = ifelse(probHatTest > 0.5, 1, 0) %>% as.factor 
+AccLogNetLog = mean(YhatTestGlmnet == Ytest) ##Accuracy
+
+probHatTest    = predict(elasticOutLog, as.matrix(Xtest), s=elasticOutLog$bestTune$lambda, type = "prob")
+confusionMatrix(data = YhatTestGlmnet, reference = Ytest)
+
+
+rocOut = roc(response = Ytest, probHatTest[,2])
+plot(rocOut,legacy.axes=T)
+AUCLogNetLog = rocOut$auc
+
+AccLogNetLog
+AUCLogNetLog
+
+
+```
+
+Logistic Regression including log transformed features
+
+```{r}
+K            = 10
+trainControl = trainControl(method = "cv", number = K)
+
+outLogisticLog = train(x = Xtrain, y = Ytrain, method = 'glm', trControl = trainControl)
+YHatTestLogistic = predict(outLogisticLog,Xtest,type = 'raw')#%>%relevel(ref = '1')
+AccLogLog = mean(YHatTestLogistic == Ytest)
+confusionMatrix(data = YHatTestLogistic, reference = Ytest)
+
+probHatTest = predict(outLogisticLog, Xtest, type = 'prob')
+rocOut = roc(response = Ytest, probHatTest[,2])
+plot(rocOut,legacy.axes=T)
+AUCLogLog = rocOut$auc
+
+AccLogLog
+AUCLogLog
+
+```
+
+
+SVM Linear with regular features + log transformed features
+
+```{r eval=FALSE, include=FALSE}
+##SVM Linear
+
+K            = 2
+trainControl = trainControl(method = "cv", number = K)
+tuneGrid     = expand.grid( C = seq(0.00005, 0.2, length.out = 10))
+
+svcOutLog   = train(x = Xtrain, y = Ytrain,
+                 method = "svmLinear", 
+                 trControl = trainControl, tuneGrid = tuneGrid)
+svcOut
+YhatSVC = predict(svcOutLog, Xtest)
+ACCSVMLogLin = mean(YhatSVC == Ytest)
+
+ACCSVMLogLin
+```
+
+SVM Poly with regular features + log transformed features
+```{r eval=FALSE, include=FALSE}
+##SVM Poly
+
+set.seed(1)
+
+K            = 2
+trainControl = trainControl(method = "cv", number = K)
+tuneGrid     = expand.grid( C = seq(0.000001, 0.001, length.out = 5),
+                            degree = 2:4,
+                            scale  = seq(0.1,1, length.out = 5))
+start = proc.time()[3]
+svmPolyOutLog   = train(x = Xtrain, y = Ytrain,
+                 method = "svmPoly", 
+                 trControl = trainControl, tuneGrid = tuneGrid)
+end = proc.time()[3]
+svmPolyOut$bestTune
+
+YhatSVCPoly = predict(svmPolyOutLog, Xtest)
+ACCSVMLogPoly = mean(YhatSVCPoly == Ytest)
+ACCSVMLogPoly
+```
+
+SVM Radial with regular features + log transformed features
+
+```{r eval=FALSE, include=FALSE}
+## SVM Radial
+
+K            = 2
+trainControl = trainControl(method = "cv", number = K)
+
+pairWiseDist = dist(Xtrain, method = 'euclidean')**2
+
+sigmaRange = quantile(pairWiseDist, c(0.9,0.5,0.1))
+hist(pairWiseDist)
+abline(v = sigmaRange[1])
+abline(v = sigmaRange[2])
+abline(v = sigmaRange[3])
+1/sigmaRange
+set.seed(1)
+tuneGrid     = expand.grid( C = c(25,250,500,1000,2000),
+                            sigma  = c(1/sigmaRange,1/sigmaRange*100))
+start = proc.time()[3]
+svmRBFoutLog   = train(x = Xtrain, y = Ytrain,
+                 method = "svmRadial", 
+                 trControl = trainControl, tuneGrid = tuneGrid)
+end = proc.time()[3]
+
+YhatSVMRadial = predict(svmRBFoutLog, Xtest)
+ACCSVMLogRadial = mean(YhatSVMRadial == Ytest)
+ACCSVMLogRadial
+
+
+
+```
+
+All accuracies together
+
+```{r}
+AccLogNet
+AccLog
+AccLogNetLog
+AccLogLog
+ACCSVMLin
+ACCSVMPoly
+ACCSVMRadial
+ACCSVMLogLin
+ACCSVMLogPoly
+ACCSVMLogRadial
+
+```
+
+New test observation
+```{r}
+Xtestobsquant = matrix(nrow = 1, ncol = dim(XtestQuant)[2])
+colnames(Xtestobsquant) = colnames(XtestQuant)
+
+Xtestobsfact = matrix(nrow =1, ncol = 3)
+colnames(Xtestobsfact) <- c("Sex","Race","Charge_Degree")
+colnames(Xtestobsfact)
+
+
+Xtestobsquant[1,] = c(60,0,0,0,20)
+table(sapply(Xtestobsquant[1,],class))
+
+
+Xtestobsfact[1,] = c("Male","Caucasian","M")
+table(sapply(Xtestobsfact[1,],class))
+
+##Preprocessing test observation features 
+
+XtestQuantCS = predict(centScale, newdata = Xtestobsquant)
+table(sapply(XtestQuantCS[1,],class))
+
+Xtestobs = cbind(XtestQuantCS,Xtestobsfact)
+table(sapply(Xtestobs[1,],class))
+
+XtestobsFinal = mutate_at(as_tibble(Xtestobs),vars(age,juv_fel_count,juv_misd_count, juv_other_count, priors_count),as.numeric)
+str(XtestobsFinal)
+
+XtestobsFinalFinal = mutate_at(as_tibble(XtestobsFinal),vars(Sex,Race,Charge_Degree),as.factor)
+str(XtestobsFinalFinal)
+
+XtestobsFFF = predict(dummyVarsOut, newdata = XtestobsFinalFinal)
+
+##Prediction from Logistic Elastic Net
+
+probHatTestObsLogNet    = predict(elasticOut, as.matrix(XtestobsFFF), s=elasticOut$bestTune$lambda, type = "prob")
+YtestobsFFFLogNet = ifelse(probHatTestObsLogNet[1,2] > 0.5, 1, 0)  
+YtestobsFFFLogNet
+
+##Prediction from Logistic Regression
+  
+probHatTestObsLog = predict(outLogistic, as.matrix(XtestobsFFF), type = 'prob')
+YtestobsFFFLog = ifelse(probHatTestObsLog[,2] > 0.5, 1, 0)  
+YtestobsFFFLog
+
+##Preprocessing test observation features to including log of features
+
+Xtestobsquant = as_tibble(Xtestobsquant)
+XtestobsquantLog = mutate(as_tibble(Xtestobsquant),log(Xtestobsquant$age), log(Xtestobsquant$juv_fel_count + 1), log(Xtestobsquant$juv_misd_count + 1), log(Xtestobsquant$juv_other_count + 1), log(Xtestobsquant$priors_count + 1)  )
+colnames(XtestobsquantLog)[6] <- "log(age)"
+colnames(XtestobsquantLog)[7] <- "log(juv_fel_count)"
+colnames(XtestobsquantLog)[8] <- "log(juv_misd_count)"
+colnames(XtestobsquantLog)[9] <- "log(juv_other_count)"
+colnames(XtestobsquantLog)[10] <- "log(priors_count)"
+
+XtestQuantobsLogCS = predict(centScaleLog, newdata = XtestobsquantLog)
+
+XtestobsLog = cbind(XtestQuantobsLogCS,Xtestobsfact)
+table(sapply(XtestobsLog[1,],class))
+str(XtestobsLog)
+
+XtestobsLogFinal = mutate_at(as_tibble(XtestobsLog),vars(Sex,Race,Charge_Degree),as.factor)
+str(XtestobsFinalFinal)
+
+XtestobsLogFFF = predict(dummyVarsOutLog, newdata = XtestobsLogFinal)
+
+##Prediction from Logistic Elastic Net with log features
+
+probHatTestobsLogNetLog    = predict(elasticOutLog, as.matrix(XtestobsLogFFF), s=elasticOutLog$bestTune$lambda, type = "prob")
+YtestobsFFFLogNetLog = ifelse(probHatTestobsLogNetLog[1,2] > 0.5, 1, 0)   
+YtestobsFFFLogNetLog
+
+##Prediction from Logistic Regression with log features
+
+probHatTestobsLogLog = predict(outLogisticLog, as.matrix(XtestobsLogFFF), type = 'prob')
+YtestobsFFFLogLog = ifelse(probHatTestobsLogLog[1,2] > 0.5, 1, 0)   
+YtestobsFFFLogLog
+
+
+print("The predictions are \n")
+
+YtestobsFFFLogNet
+YtestobsFFFLog
+YtestobsFFFLogNetLog
+YtestobsFFFLogLog
+
+
+
+
+finalResult = c(YtestobsFFFLogNet,YtestobsFFFLog,YtestobsFFFLogNetLog,YtestobsFFFLogLog)
+
+names(finalResult) = c("Logistic Elastic net", "Logistic Regression", "Logistic Elastic Net with Log Transformed Features", "Logistic Regression with Log Transformed Features")
+
+finalResult
+```
+
+RecidPredict function
+```{r}
+RecidPredict <- function(input_sex,input_race,input_chargeDegree, input_age,input_juvf,input_juvm,input_juvo,input_prior){
+  
+  Xtestobsquant = matrix(nrow = 1, ncol = dim(XtestQuant)[2])
+colnames(Xtestobsquant) = colnames(XtestQuant)
+
+Xtestobsfact = matrix(nrow =1, ncol = 3)
+colnames(Xtestobsfact) <- c("Sex","Race","Charge_Degree")
+colnames(Xtestobsfact)
+
+
+Xtestobsquant[1,] = c(input_age,input_juvf,input_juvm,input_juvo,input_prior)
+#table(sapply(Xtestobsquant[1,],class))
+
+
+Xtestobsfact[1,] = c(input_sex,input_race,input_chargeDegree)
+#table(sapply(Xtestobsfact[1,],class))
+
+##Preprocessing test observation features 
+
+XtestQuantCS = predict(centScale, newdata = Xtestobsquant)
+#table(sapply(XtestQuantCS[1,],class))
+
+Xtestobs = cbind(XtestQuantCS,Xtestobsfact)
+#table(sapply(Xtestobs[1,],class))
+
+XtestobsFinal = mutate_at(as_tibble(Xtestobs),vars(age,juv_fel_count,juv_misd_count, juv_other_count, priors_count),as.numeric)
+#str(XtestobsFinal)
+
+XtestobsFinalFinal = mutate_at(as_tibble(XtestobsFinal),vars(Sex,Race,Charge_Degree),as.factor)
+#str(XtestobsFinalFinal)
+
+XtestobsFFF = predict(dummyVarsOut, newdata = XtestobsFinalFinal)
+
+##Prediction from Logistic Elastic Net
+
+probHatTestObsLogNet    = predict(elasticOut, as.matrix(XtestobsFFF), s=elasticOut$bestTune$lambda, type = "prob")
+YtestobsFFFLogNet = ifelse(probHatTestObsLogNet[1,2] > 0.5, 1, 0)  
+#YtestobsFFFLogNet
+
+##Prediction from Logistic Regression
+
+probHatTestObsLog = predict(outLogistic, as.matrix(XtestobsFFF), type = 'prob')
+YtestobsFFFLog = ifelse(probHatTestObsLog[,2] > 0.5, 1, 0)  
+#YtestobsFFFLog
+
+##Preprocessing test observation features to including log of features
+
+Xtestobsquant = as_tibble(Xtestobsquant)
+XtestobsquantLog = mutate(as_tibble(Xtestobsquant),log(Xtestobsquant$age), log(Xtestobsquant$juv_fel_count + 1), log(Xtestobsquant$juv_misd_count + 1), log(Xtestobsquant$juv_other_count + 1), log(Xtestobsquant$priors_count + 1)  )
+colnames(XtestobsquantLog)[6] <- "log(age)"
+colnames(XtestobsquantLog)[7] <- "log(juv_fel_count)"
+colnames(XtestobsquantLog)[8] <- "log(juv_misd_count)"
+colnames(XtestobsquantLog)[9] <- "log(juv_other_count)"
+colnames(XtestobsquantLog)[10] <- "log(priors_count)"
+
+XtestQuantobsLogCS = predict(centScaleLog, newdata = XtestobsquantLog)
+
+XtestobsLog = cbind(XtestQuantobsLogCS,Xtestobsfact)
+#table(sapply(XtestobsLog[1,],class))
+#str(XtestobsLog)
+
+XtestobsLogFinal = mutate_at(as_tibble(XtestobsLog),vars(Sex,Race,Charge_Degree),as.factor)
+#str(XtestobsFinalFinal)
+
+XtestobsLogFFF = predict(dummyVarsOutLog, newdata = XtestobsLogFinal)
+
+##Prediction from Logistic Elastic Net with log features
+
+probHatTestobsLogNetLog    = predict(elasticOutLog, as.matrix(XtestobsLogFFF), s=elasticOutLog$bestTune$lambda, type = "prob")
+YtestobsFFFLogNetLog = ifelse(probHatTestobsLogNetLog[1,2] > 0.5, 1, 0)   
+#YtestobsFFFLogNetLog
+
+##Prediction from Logistic Regression with log features
+
+probHatTestobsLogLog = predict(outLogisticLog, as.matrix(XtestobsLogFFF), type = 'prob')
+YtestobsFFFLogLog = ifelse(probHatTestobsLogLog[1,2] > 0.5, 1, 0)   
+#YtestobsFFFLogLog
+
+
+#print("The predictions are \n")
+
+#YtestobsFFFLogNet
+#YtestobsFFFLog
+#YtestobsFFFLogNetLog
+#YtestobsFFFLogLog
+
+finalResult = c(YtestobsFFFLogNet,YtestobsFFFLog,YtestobsFFFLogNetLog,YtestobsFFFLogLog)
+
+names(finalResult) = c("Logistic Elastic net", "Logistic Regression", "Logistic Elastic Net with Log Transformed Features", "Logistic Regression with Log Transformed Features")
+
+return(as.data.frame(finalResult))
+  
+}
+
+
+```
+
+
+ShinyApp
+
+```{r}
+library(shiny)
+
+h1("Recidivism Prediction App")
+
+
+ui <- fluidPage(
+  ##App title
+  titlePanel("Recidivism Prediction App"),
+  
+sidebarLayout(position = "right",
+
+              sidebarPanel(selectInput("sex", label = "Sex", choices = c("Male","Female")),
+                          selectInput("race", label = "Race", choices = c("Other","African-American","Caucasian","Hispanic", "Native American","Asian")),
+                          selectInput("age", label = "Age", choices = c(19:100)),
+                          selectInput("charge_degree", label = "Charge Degree", choices = c("M","F")),
+                          selectInput("juv_fel_count", label = "Juvenile Felony Count", choices = c(0:100)),
+                          selectInput("juv_misd_count", label = "Juvenile Misdemeanour Count", choices = c(0:100)),
+                          selectInput("juv_other_count", label = "Juvenile Other Count", choices = c(0:100)),
+                          selectInput("priors_count", label = "Priors Count", choices = c(0:100)),actionButton("action", label = "GO")),
+
+  mainPanel(tableOutput("finalResult"), position = "right")
+                
+                        
+))
+
+
+# Define server logic ----
+server <- function(input, output) {
+  
+  output$finalResult <- renderTable(rownames = TRUE,{ 
+    isolate({  
+    T.gender <- input$sex
+    T.age <- as.numeric(input$age)
+    T.race <- input$race
+    T.chargeDegree <- input$charge_degree
+    T.juvFelCount <- as.numeric(input$juv_fel_count)
+    T.juvMisdCount <- as.numeric(input$juv_misd_count)
+    T.juvOtherCount <- as.numeric(input$juv_other_count)
+    T.priorCount <- as.numeric(input$priors_count)
+    
+    
+    })
+  if(input$action == 0) {return()}
+      
+  
+RecidPredict(T.gender,T.race,T.chargeDegree,T.age,T.juvFelCount,T.juvMisdCount,T.juvOtherCount,T.priorCount)
+        
+  })
+  
+}
+
+# Run the app ----
+shinyApp(ui = ui, server = server)
+```
+
